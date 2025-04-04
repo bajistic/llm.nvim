@@ -127,34 +127,10 @@ function M.make_openai_spec_curl_args(opts, prompt, system_prompt)
 	return args
 end
 
-function M.write_string_at_cursor_old(str)
-	-- Print *before* scheduling
+function M.write_string_at_cursor(str, target_buffer, initial_row, initial_col)
 	vim.schedule(function()
-		-- Print *inside* the scheduled function
-		-- print("[dingllm_debug] write_string_at_cursor - SCHEDULED function executing.")
-		local current_window = vim.api.nvim_get_current_win()
-		local cursor_position = vim.api.nvim_win_get_cursor(current_window)
-		local row, col = cursor_position[1], cursor_position[2]
-
-		local lines = vim.split(str, "\n")
-		-- print("[dingllm_debug] write_string_at_cursor - Split into", #lines, "lines.")
-
-		vim.cmd("undojoin")
-		-- print("[dingllm_debug] write_string_at_cursor - About to call nvim_put.")
-		vim.api.nvim_put(lines, "c", true, true)
-		-- print("[dingllm_debug] write_string_at_cursor - nvim_put call finished.")
-
-		local num_lines = #lines
-		local last_line_length = #lines[num_lines]
-		vim.api.nvim_win_set_cursor(current_window, { row + num_lines - 1, col + last_line_length })
-		-- print("[dingllm_debug] write_string_at_cursor - Cursor set.")
-	end)
-end
-
-function M.write_string_at_cursor(str)
-	vim.schedule(function()
-		-- Get the current buffer
-		local buffer = vim.api.nvim_get_current_buf()
+		-- Use the provided target buffer instead of the current one
+		local buffer = target_buffer
 
 		-- Check if mark 's' exists to determine insertion position
 		local mark_s = vim.api.nvim_buf_get_mark(buffer, "s")
@@ -163,10 +139,8 @@ function M.write_string_at_cursor(str)
 			-- Use mark 's' if it exists (1-based indexing)
 			row, col = mark_s[1], mark_s[2]
 		else
-			-- Otherwise, use the current cursor position
-			local current_window = vim.api.nvim_get_current_win()
-			local cursor_position = vim.api.nvim_win_get_cursor(current_window)
-			row, col = cursor_position[1], cursor_position[2]
+			-- Use the initial position passed from the caller
+			row, col = initial_row, initial_col
 		end
 
 		-- Split the string into lines
@@ -191,90 +165,6 @@ function M.write_string_at_cursor(str)
 
 		-- Update mark 's' to the new position (1-based indexing)
 		vim.api.nvim_buf_set_mark(buffer, "s", new_row, new_col, {})
-	end)
-end
-
-function M.write_string_at_cursor_works(str)
-	vim.schedule(function()
-		-- Get the current buffer
-		local buffer = vim.api.nvim_get_current_buf()
-
-		-- Check if mark 's' exists to determine insertion position
-		local mark_s = vim.api.nvim_buf_get_mark(buffer, "s")
-		local row, col
-		if mark_s[1] > 0 then
-			-- Use mark 's' if it exists (1-based indexing)
-			row, col = mark_s[1], mark_s[2]
-		else
-			-- Otherwise, use the current cursor position
-			local current_window = vim.api.nvim_get_current_win()
-			local cursor_position = vim.api.nvim_win_get_cursor(current_window)
-			row, col = cursor_position[1], cursor_position[2]
-		end
-
-		-- Split the string into lines
-		local lines = vim.split(str, "\n")
-
-		-- Insert the text at the saved position (convert to 0-based indexing for nvim_buf_set_text)
-		vim.api.nvim_buf_set_text(buffer, row - 1, col, row - 1, col, lines)
-
-		-- Calculate the new position after insertion
-		local num_lines = #lines
-		local new_row, new_col
-		if num_lines == 1 then
-			-- Single line: append to the same row
-			new_row = row
-			new_col = col + #lines[1]
-		else
-			-- Multiple lines: move to the end of the last line
-			new_row = row + num_lines - 1
-			new_col = #lines[num_lines]
-		end
-
-		-- Update mark 's' to the new position (1-based indexing)
-		vim.api.nvim_buf_set_mark(buffer, "s", new_row, new_col, {})
-	end)
-end
-
-function M.write_string_at_cursor_claude(str)
-	-- Capture the current state before scheduling
-	local target_window = vim.api.nvim_get_current_win()
-	local target_buffer = vim.api.nvim_get_current_buf()
-	local cursor_position = vim.api.nvim_win_get_cursor(target_window)
-	local row, col = cursor_position[1], cursor_position[2]
-
-	vim.schedule(function()
-		-- Verify the buffer still exists
-		if not vim.api.nvim_buf_is_valid(target_buffer) then
-			return
-		end
-
-		local lines = vim.split(str, "\n")
-
-		-- Get the current line content
-		local current_line = vim.api.nvim_buf_get_lines(target_buffer, row - 1, row, true)[1]
-
-		-- Split the current line at the saved column position
-		local line_start = string.sub(current_line, 1, col)
-		local line_end = string.sub(current_line, col + 1)
-
-		-- Prepare the new lines
-		local new_lines = {}
-		if #lines == 1 then
-			-- Single line insertion
-			new_lines = { line_start .. lines[1] .. line_end }
-			vim.api.nvim_buf_set_lines(target_buffer, row - 1, row, true, new_lines)
-		else
-			-- Multi-line insertion
-			new_lines[1] = line_start .. lines[1]
-			for i = 2, #lines - 1 do
-				new_lines[i] = lines[i]
-			end
-			new_lines[#lines] = lines[#lines] .. line_end
-
-			-- Replace the old line with the new lines
-			vim.api.nvim_buf_set_lines(target_buffer, row - 1, row, true, new_lines)
-		end
 	end)
 end
 
@@ -298,31 +188,31 @@ local function get_prompt(opts)
 	return prompt
 end
 
-function M.handle_anthropic_spec_data(data_stream, event_state)
+function M.handle_anthropic_spec_data(data_stream, event_state, target_buffer, initial_row, initial_col)
 	if event_state == "content_block_delta" then
 		local json = vim.json.decode(data_stream)
 		if json.delta and json.delta.text then
-			M.write_string_at_cursor(json.delta.text)
+			M.write_string_at_cursor(json.delta.text, target_buffer, initial_row, initial_col)
 		end
 	end
 end
 
-function M.handle_openai_spec_data(data_stream)
+function M.handle_openai_spec_data(data_stream, _, target_buffer, initial_row, initial_col)
 	if data_stream:match('"delta":') then
 		local json = vim.json.decode(data_stream)
 		if json.choices and json.choices[1] and json.choices[1].delta then
 			local content = json.choices[1].delta.content
 			if content then
-				M.write_string_at_cursor(content)
+				M.write_string_at_cursor(content, target_buffer, initial_row, initial_col)
 			end
 		end
 	end
 end
 
-function M.handle_ollama_spec_data(data_stream)
+function M.handle_ollama_spec_data(data_stream, _, target_buffer, initial_row, initial_col)
 	local ok, json = pcall(vim.json.decode, data_stream)
 	if ok and json and json.response then
-		M.write_string_at_cursor(json.response)
+		M.write_string_at_cursor(json.response, target_buffer, initial_row, initial_col)
 	end
 end
 
@@ -412,14 +302,13 @@ end
 
 -- Inside handle_gemini_spec_data
 -- Revert to simpler version expecting JSON chunks after "data: " prefix
-function M.handle_gemini_spec_data(data_chunk, _)
+function M.handle_gemini_spec_data(data_chunk, _, target_buffer, initial_row, initial_col)
 	print("[dingllm_debug] handle_gemini_spec_data received chunk:", data_chunk)
 	local ok, decoded_obj = pcall(vim.json.decode, data_chunk)
 
 	if ok and decoded_obj then
 		print("[dingllm_debug] Gemini decoded JSON object:", vim.inspect(decoded_obj))
 
-		-- *** Check if candidates field exists before trying to access it ***
 		if
 			decoded_obj.candidates
 			and type(decoded_obj.candidates) == "table"
@@ -431,20 +320,16 @@ function M.handle_gemini_spec_data(data_chunk, _)
 			and decoded_obj.candidates[1].content.parts[1].text
 			and type(decoded_obj.candidates[1].content.parts[1].text) == "string"
 		then
-			-- Candidates field exists and has the expected structure
 			local text_chunk = decoded_obj.candidates[1].content.parts[1].text
 			print("[dingllm_debug] Gemini extracted text chunk:", text_chunk)
-			M.write_string_at_cursor(text_chunk)
+			M.write_string_at_cursor(text_chunk, target_buffer, initial_row, initial_col)
 		else
-			-- Candidates field might be missing (e.g., metadata object) or structure is wrong.
-			-- Only print a warning if the structure looks partially valid but text is missing.
 			if decoded_obj.candidates then
 				print(
 					"[dingllm_warn] Gemini response object structure invalid or text path not found. Object:",
 					vim.inspect(decoded_obj)
 				)
 			else
-				-- No candidates field, likely metadata - ignore silently.
 				print("[dingllm_debug] Gemini decoded object ignored (no candidates field, likely metadata).")
 			end
 		end
@@ -588,6 +473,10 @@ local active_job = nil
 function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_data_fn)
 	print("[dingllm_debug] Entering invoke_llm_and_stream_into_editor")
 	vim.api.nvim_clear_autocmds({ group = group })
+	local original_buffer = vim.api.nvim_get_current_buf()
+	local original_window = vim.api.nvim_get_current_win()
+	local original_cursor = vim.api.nvim_win_get_cursor(original_window)
+	local initial_row, initial_col = original_cursor[1], original_cursor[2]
 
 	local final_args -- Variable to hold the final arguments for curl
 	local curr_event_state = nil
@@ -599,15 +488,13 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
 	if opts.prepared_prompt then
 		print("[dingllm_debug] Using prepared_prompt from opts.")
 		prompt_to_use = opts.prepared_prompt
-		-- System prompt is generally ignored/handled differently with prepared prompts
 		system_prompt_to_use = nil -- Set system prompt to nil when using prepared prompt
 		print("[dingllm_debug] Prepared prompt length:", #prompt_to_use)
 	else
-		-- Standard call path, get prompt normally
 		print("[dingllm_debug] No prepared_prompt found. Using get_prompt().")
 		prompt_to_use = get_prompt(opts)
 		system_prompt_to_use = opts.system_prompt
-			or "You are a tsundere uwu anime. Yell at me for not setting my configuration for my llm plugin correctly" -- Default system prompt
+			or "You are a tsundere uwu anime. Yell at me for not setting my configuration for my llm plugin correctly"
 		print(
 			"[dingllm_debug] Standard call prompt length:",
 			prompt_to_use and #prompt_to_use or "nil",
@@ -616,48 +503,44 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
 		)
 	end
 
-	-- Call the provider-specific make_args function
 	final_args = make_curl_args_fn(opts, prompt_to_use, system_prompt_to_use)
 
 	if not final_args then
 		vim.notify("Failed to create LLM request arguments.", vim.log.levels.ERROR)
 		print("[dingllm_debug] make_curl_args_fn returned nil")
-		return -- Stop if args creation failed
+		return
 	end
 	print("[dingllm_debug] FINAL curl args to be used:", vim.inspect(final_args))
 
 	local function parse_and_call(line)
-		-- Add check for nil line before processing
 		if line == nil then
 			print("[dingllm_debug] parse_and_call received nil line, skipping.")
 			return
 		end
 		print("[dingllm_debug] parse_and_call received raw line:", line)
 
-		-- Revert to original SSE parsing logic
 		local event = line:match("^event: (.+)$")
 		if event then
 			print("[dingllm_debug] parse_and_call matched event:", event)
 			curr_event_state = event
-			return -- Event lines don't usually have data for the handler
+			return
 		end
 
 		local data_match = line:match("^data: (.+)$")
 		if data_match then
 			print("[dingllm_debug] parse_and_call matched data prefix, passing chunk to handler:", data_match)
-			handle_data_fn(data_match, curr_event_state) -- Pass only the JSON part
+			handle_data_fn(data_match, curr_event_state, original_buffer, initial_row, initial_col)
 		else
 			print("[dingllm_debug] parse_and_call - Line ignored (no event/data prefix):", line)
 		end
 	end
 
 	if active_job then
-		print("[dingllm_debug] Shutting down pre-existing active job before starting new one.") -- Debug print
+		print("[dingllm_debug] Shutting down pre-existing active job before starting new one.")
 		active_job:shutdown()
 		active_job = nil
 	end
 
-	-- *** Add print right before creating the job ***
 	print("[dingllm_debug] About to create Job. final_args type:", type(final_args))
 	if type(final_args) == "table" then
 		print("[dingllm_debug] final_args content just before Job:new:", vim.inspect(final_args))
@@ -667,20 +550,19 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
 
 	active_job = Job:new({
 		command = "curl",
-		args = final_args, -- Use the captured final_args
-		on_stdout = vim.schedule_wrap(function(_, out) -- Wrap in schedule_wrap for safety
-			print("[dingllm_debug] Job on_stdout received:", out) -- Print right inside callback
+		args = final_args,
+		on_stdout = vim.schedule_wrap(function(_, out)
+			print("[dingllm_debug] Job on_stdout received:", out)
 			parse_and_call(out)
 		end),
-		on_stderr = vim.schedule_wrap(function(_, err) -- Wrap in schedule_wrap
+		on_stderr = vim.schedule_wrap(function(_, err)
 			if err and err ~= "" then
-				print("[dingllm_stderr] Curl stderr:", err) -- Make output distinct
-				vim.notify("LLM Job stderr: " .. err, vim.log.levels.WARN) -- Also notify
+				print("[dingllm_stderr] Curl stderr:", err)
+				vim.notify("LLM Job stderr: " .. err, vim.log.levels.WARN)
 			end
 		end),
-		on_exit = vim.schedule_wrap(function(_, code) -- Wrap in schedule_wrap
+		on_exit = vim.schedule_wrap(function(_, code)
 			print("[dingllm_debug] Job exited with code:", code)
-			-- Check buffer on exit
 			if gemini_stream_buffer ~= "" then
 				print(
 					"[dingllm_warn] Job exited, but Gemini buffer was not empty or fully processed:",
@@ -688,30 +570,27 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
 				)
 			end
 			active_job = nil
-			gemini_stream_buffer = "" -- Ensure buffer is cleared on exit
-			-- Clean up the escape mapping ONLY when the job finishes naturally or is cancelled
+			gemini_stream_buffer = ""
 			pcall(api.nvim_del_keymap, "n", "<Esc>")
-			-- pcall(api.nvim_del_keymap, 'i', '<Esc>') -- Consider if needed
+			if vim.api.nvim_buf_is_valid(original_buffer) then
+				vim.api.nvim_buf_del_mark(original_buffer, "s")
+			end
 		end),
-		stderr_buffered = false, -- Process stderr line-by-line
+		stderr_buffered = false,
 	})
 
-	print("[dingllm_debug] Starting curl job...") -- Add print
+	print("[dingllm_debug] Starting curl job...")
 	active_job:start()
 
-	-- Setup autocmd AFTER starting the job
 	vim.api.nvim_create_autocmd("User", {
 		group = group,
 		pattern = "DING_LLM_Escape",
 		callback = function()
-			M.cancel_llm_job() -- Call the new cancel function
+			M.cancel_llm_job()
 		end,
 	})
 
-	-- Setup keymap AFTER starting the job and setting up autocmd
 	vim.api.nvim_set_keymap("n", "<Esc>", ":doautocmd User DING_LLM_Escape<CR>", { noremap = true, silent = true })
-	-- Consider if an insert mode escape is also needed:
-	-- vim.api.nvim_set_keymap('i', '<Esc>', '<Cmd>doautocmd User DING_LLM_Escape<CR>', { noremap = true, silent = true })
 
 	return active_job
 end
