@@ -127,28 +127,154 @@ function M.make_openai_spec_curl_args(opts, prompt, system_prompt)
 	return args
 end
 
-function M.write_string_at_cursor(str)
+function M.write_string_at_cursor_old(str)
 	-- Print *before* scheduling
-	print("[dingllm_debug] write_string_at_cursor called with string length:", #str)
 	vim.schedule(function()
 		-- Print *inside* the scheduled function
-		print("[dingllm_debug] write_string_at_cursor - SCHEDULED function executing.")
+		-- print("[dingllm_debug] write_string_at_cursor - SCHEDULED function executing.")
 		local current_window = vim.api.nvim_get_current_win()
 		local cursor_position = vim.api.nvim_win_get_cursor(current_window)
 		local row, col = cursor_position[1], cursor_position[2]
 
 		local lines = vim.split(str, "\n")
-		print("[dingllm_debug] write_string_at_cursor - Split into", #lines, "lines.")
+		-- print("[dingllm_debug] write_string_at_cursor - Split into", #lines, "lines.")
 
 		vim.cmd("undojoin")
-		print("[dingllm_debug] write_string_at_cursor - About to call nvim_put.")
+		-- print("[dingllm_debug] write_string_at_cursor - About to call nvim_put.")
 		vim.api.nvim_put(lines, "c", true, true)
-		print("[dingllm_debug] write_string_at_cursor - nvim_put call finished.")
+		-- print("[dingllm_debug] write_string_at_cursor - nvim_put call finished.")
 
 		local num_lines = #lines
 		local last_line_length = #lines[num_lines]
 		vim.api.nvim_win_set_cursor(current_window, { row + num_lines - 1, col + last_line_length })
-		print("[dingllm_debug] write_string_at_cursor - Cursor set.")
+		-- print("[dingllm_debug] write_string_at_cursor - Cursor set.")
+	end)
+end
+
+function M.write_string_at_cursor(str)
+	vim.schedule(function()
+		-- Get the current buffer
+		local buffer = vim.api.nvim_get_current_buf()
+
+		-- Check if mark 's' exists to determine insertion position
+		local mark_s = vim.api.nvim_buf_get_mark(buffer, "s")
+		local row, col
+		if mark_s[1] > 0 then
+			-- Use mark 's' if it exists (1-based indexing)
+			row, col = mark_s[1], mark_s[2]
+		else
+			-- Otherwise, use the current cursor position
+			local current_window = vim.api.nvim_get_current_win()
+			local cursor_position = vim.api.nvim_win_get_cursor(current_window)
+			row, col = cursor_position[1], cursor_position[2]
+		end
+
+		-- Split the string into lines
+		local lines = vim.split(str, "\n")
+
+		-- Insert the text at the saved position (convert to 0-based indexing for nvim_buf_set_text)
+		vim.cmd("undojoin")
+		vim.api.nvim_buf_set_text(buffer, row - 1, col, row - 1, col, lines)
+
+		-- Calculate the new position after insertion
+		local num_lines = #lines
+		local new_row, new_col
+		if num_lines == 1 then
+			-- Single line: append to the same row
+			new_row = row
+			new_col = col + #lines[1]
+		else
+			-- Multiple lines: move to the end of the last line
+			new_row = row + num_lines - 1
+			new_col = #lines[num_lines]
+		end
+
+		-- Update mark 's' to the new position (1-based indexing)
+		vim.api.nvim_buf_set_mark(buffer, "s", new_row, new_col, {})
+	end)
+end
+
+function M.write_string_at_cursor_works(str)
+	vim.schedule(function()
+		-- Get the current buffer
+		local buffer = vim.api.nvim_get_current_buf()
+
+		-- Check if mark 's' exists to determine insertion position
+		local mark_s = vim.api.nvim_buf_get_mark(buffer, "s")
+		local row, col
+		if mark_s[1] > 0 then
+			-- Use mark 's' if it exists (1-based indexing)
+			row, col = mark_s[1], mark_s[2]
+		else
+			-- Otherwise, use the current cursor position
+			local current_window = vim.api.nvim_get_current_win()
+			local cursor_position = vim.api.nvim_win_get_cursor(current_window)
+			row, col = cursor_position[1], cursor_position[2]
+		end
+
+		-- Split the string into lines
+		local lines = vim.split(str, "\n")
+
+		-- Insert the text at the saved position (convert to 0-based indexing for nvim_buf_set_text)
+		vim.api.nvim_buf_set_text(buffer, row - 1, col, row - 1, col, lines)
+
+		-- Calculate the new position after insertion
+		local num_lines = #lines
+		local new_row, new_col
+		if num_lines == 1 then
+			-- Single line: append to the same row
+			new_row = row
+			new_col = col + #lines[1]
+		else
+			-- Multiple lines: move to the end of the last line
+			new_row = row + num_lines - 1
+			new_col = #lines[num_lines]
+		end
+
+		-- Update mark 's' to the new position (1-based indexing)
+		vim.api.nvim_buf_set_mark(buffer, "s", new_row, new_col, {})
+	end)
+end
+
+function M.write_string_at_cursor_claude(str)
+	-- Capture the current state before scheduling
+	local target_window = vim.api.nvim_get_current_win()
+	local target_buffer = vim.api.nvim_get_current_buf()
+	local cursor_position = vim.api.nvim_win_get_cursor(target_window)
+	local row, col = cursor_position[1], cursor_position[2]
+
+	vim.schedule(function()
+		-- Verify the buffer still exists
+		if not vim.api.nvim_buf_is_valid(target_buffer) then
+			return
+		end
+
+		local lines = vim.split(str, "\n")
+
+		-- Get the current line content
+		local current_line = vim.api.nvim_buf_get_lines(target_buffer, row - 1, row, true)[1]
+
+		-- Split the current line at the saved column position
+		local line_start = string.sub(current_line, 1, col)
+		local line_end = string.sub(current_line, col + 1)
+
+		-- Prepare the new lines
+		local new_lines = {}
+		if #lines == 1 then
+			-- Single line insertion
+			new_lines = { line_start .. lines[1] .. line_end }
+			vim.api.nvim_buf_set_lines(target_buffer, row - 1, row, true, new_lines)
+		else
+			-- Multi-line insertion
+			new_lines[1] = line_start .. lines[1]
+			for i = 2, #lines - 1 do
+				new_lines[i] = lines[i]
+			end
+			new_lines[#lines] = lines[#lines] .. line_end
+
+			-- Replace the old line with the new lines
+			vim.api.nvim_buf_set_lines(target_buffer, row - 1, row, true, new_lines)
+		end
 	end)
 end
 
